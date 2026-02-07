@@ -1,596 +1,304 @@
 # main.py
-import sys
+from __future__ import annotations
+
 import os
-import json
-from pathlib import Path
+import sys
+import time
+import traceback
+from typing import Optional
 
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QLabel, QPushButton, QFileDialog, QLineEdit,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QComboBox, QMessageBox,
-    QProgressBar, QFrame, QCheckBox
+    QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout,
+    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
+    QProgressBar, QVBoxLayout, QWidget, QInputDialog
 )
-from PyQt5.QtCore import QThread, pyqtSignal, Qt
 
-# ВАЖНО: wb_fill.py должен лежать рядом с main.py
-from wb_fill import fill_wb_template  # noqa
+from wb_fill import FillParams, fill_wb_template, generate_preview
 
 
-APP_NAME = "Sunglasses SEO PRO"
+def app_data_dir(app_name: str = "Sunglasses SEO PRO") -> str:
+    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    path = os.path.join(base, app_name, "data")
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
-# -------------------------------
-# DATA DIR + SETTINGS
-# -------------------------------
-def app_data_dir() -> Path:
-    base = Path(os.getenv("APPDATA", str(Path.home())))
-    p = base / APP_NAME / "data"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-def settings_path() -> Path:
-    base = Path(os.getenv("APPDATA", str(Path.home())))
-    p = base / APP_NAME
-    p.mkdir(parents=True, exist_ok=True)
-    return p / "settings.json"
-
-
-def load_settings() -> dict:
-    p = settings_path()
-    if p.exists():
-        try:
-            return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-    return {}
-
-
-def save_settings(d: dict):
-    try:
-        settings_path().write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def ensure_list_file(path: Path, defaults: list):
-    if not path.exists():
-        path.write_text("\n".join(defaults) + "\n", encoding="utf-8")
-
-
-def load_list(path: Path, defaults: list) -> list:
-    ensure_list_file(path, defaults)
-    lines = []
-    for s in path.read_text(encoding="utf-8").splitlines():
-        s = s.strip()
-        if s:
-            lines.append(s)
-    # уникализируем и сортируем слегка
-    out = []
-    seen = set()
-    for x in lines:
-        if x.lower() not in seen:
-            seen.add(x.lower())
-            out.append(x)
-    return out
-
-
-def add_to_list(path: Path, value: str):
-    value = (value or "").strip()
-    if not value:
-        return
-    ensure_list_file(path, [])
-    items = load_list(path, [])
-    if value.lower() in {x.lower() for x in items}:
-        return
-    with path.open("a", encoding="utf-8") as f:
-        f.write(value + "\n")
-
-
-# -------------------------------
-# THEMES (QSS)
-# -------------------------------
-THEMES = {
-    "Midnight": """
-        QWidget { background:#0b1220; color:#e7eefc; font-size:13px; }
-        QLabel#Title { font-size:22px; font-weight:900; }
-        QLabel#Subtitle { color:#aab8d6; }
-        QLabel#Muted { color:#97a6c7; }
-        QLabel#Section { font-weight:800; }
-        QLabel#Pill { background:#16213b; border:1px solid #24345c; border-radius:10px; padding:6px 10px; color:#cfe1ff; }
-        QFrame#Card { background:#0f1a2e; border:1px solid #1f2b46; border-radius:14px; }
-        QLineEdit, QComboBox {
-            background:#0b1426; border:1px solid #1f2b46; border-radius:10px; padding:8px;
-        }
-        QComboBox::drop-down { border:0; width:26px; }
-        QComboBox::down-arrow {
-            image:none;
-            border-left:6px solid transparent;
-            border-right:6px solid transparent;
-            border-top:8px solid #cfe1ff;
-            margin-right:8px;
-        }
-        QPushButton#Primary {
-            background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #6d28d9, stop:1 #8b5cf6);
-            border:0; border-radius:12px; padding:10px 14px; font-weight:800; color:#ffffff;
-        }
-        QPushButton#Ghost { background:#16213b; border:1px solid #24345c; border-radius:12px; padding:10px 14px; font-weight:700; }
-        QPushButton#Plus { background:#16213b; border:1px solid #24345c; border-radius:10px; padding:8px 12px; font-weight:900; }
-        QPushButton:hover { opacity:0.96; }
-        QPushButton:disabled { background:#2a3350; color:#9aa7c6; }
-        QProgressBar { background:#0b1426; border:1px solid #1f2b46; border-radius:10px; text-align:center; }
-        QProgressBar::chunk { background:#8b5cf6; border-radius:10px; }
-        QCheckBox { spacing:8px; }
-    """,
-    "Graphite": """
-        QWidget { background:#0f0f12; color:#f2f2f2; font-size:13px; }
-        QLabel#Title { font-size:22px; font-weight:900; }
-        QLabel#Subtitle { color:#bdbdbd; }
-        QLabel#Muted { color:#b0b0b0; }
-        QLabel#Section { font-weight:800; }
-        QLabel#Pill { background:#1a1a1f; border:1px solid #2a2a33; border-radius:10px; padding:6px 10px; }
-        QFrame#Card { background:#17171c; border:1px solid #2a2a33; border-radius:14px; }
-        QLineEdit, QComboBox { background:#121217; border:1px solid #2a2a33; border-radius:10px; padding:8px; }
-        QComboBox::drop-down { border:0; width:26px; }
-        QComboBox::down-arrow { image:none; border-left:6px solid transparent; border-right:6px solid transparent; border-top:8px solid #eaeaea; margin-right:8px; }
-        QPushButton#Primary { background:#2d6cdf; border:0; border-radius:12px; padding:10px 14px; font-weight:800; color:#fff; }
-        QPushButton#Ghost { background:#1a1a1f; border:1px solid #2a2a33; border-radius:12px; padding:10px 14px; font-weight:700; }
-        QPushButton#Plus { background:#1a1a1f; border:1px solid #2a2a33; border-radius:10px; padding:8px 12px; font-weight:900; }
-        QProgressBar { background:#121217; border:1px solid #2a2a33; border-radius:10px; text-align:center; }
-        QProgressBar::chunk { background:#2d6cdf; border-radius:10px; }
-    """,
-    "Light": """
-        QWidget { background:#f6f7fb; color:#12131a; font-size:13px; }
-        QLabel#Title { font-size:22px; font-weight:900; }
-        QLabel#Subtitle { color:#55607a; }
-        QLabel#Muted { color:#5f6b84; }
-        QLabel#Section { font-weight:800; }
-        QLabel#Pill { background:#eef3ff; border:1px solid #d7e2ff; border-radius:10px; padding:6px 10px; color:#224cff; }
-        QFrame#Card { background:#ffffff; border:1px solid #dfe5f1; border-radius:14px; }
-        QLineEdit, QComboBox { background:#ffffff; border:1px solid #dfe5f1; border-radius:10px; padding:8px; }
-        QComboBox::drop-down { border:0; width:26px; }
-        QComboBox::down-arrow { image:none; border-left:6px solid transparent; border-right:6px solid transparent; border-top:8px solid #2b61ff; margin-right:8px; }
-        QPushButton#Primary { background:#2b61ff; border:0; border-radius:12px; padding:10px 14px; font-weight:800; color:#fff; }
-        QPushButton#Ghost { background:#eef3ff; border:1px solid #d7e2ff; border-radius:12px; padding:10px 14px; font-weight:700; }
-        QPushButton#Plus { background:#eef3ff; border:1px solid #d7e2ff; border-radius:10px; padding:8px 12px; font-weight:900; }
-        QProgressBar { background:#ffffff; border:1px solid #dfe5f1; border-radius:10px; text-align:center; }
-        QProgressBar::chunk { background:#2b61ff; border-radius:10px; }
-    """,
+GRAPHITE_QSS = """
+QMainWindow { background: #0f0f10; }
+QWidget { color: #e8e8e8; font-size: 12px; }
+QFrame#card { background: #151516; border: 1px solid #2b2b2c; border-radius: 14px; }
+QLabel#title { font-size: 22px; font-weight: 700; }
+QLabel#subtitle { color: #b8b8b8; }
+QPushButton {
+  background: #2d6cdf; border: none; padding: 10px 14px; border-radius: 12px; font-weight: 700;
 }
+QPushButton:hover { background: #3776ea; }
+QPushButton:disabled { background: #2b2b2c; color: #888; }
+QPushButton#btnSmall { padding: 8px 12px; border-radius: 12px; font-weight: 700; }
+QLineEdit, QComboBox {
+  background: #101011; border: 1px solid #2b2b2c; border-radius: 10px; padding: 8px 10px;
+}
+QComboBox::drop-down { border: none; width: 24px; }
+QComboBox::down-arrow { image: none; }
+QCheckBox { spacing: 8px; }
+QProgressBar {
+  background: #101011; border: 1px solid #2b2b2c; border-radius: 12px; text-align: center;
+  height: 22px;
+}
+QProgressBar::chunk { background: #2d6cdf; border-radius: 12px; }
+"""
 
 
-# -------------------------------
-# Worker thread
-# -------------------------------
 class Worker(QThread):
     progress = pyqtSignal(int)
-    finished = pyqtSignal(str, int, dict)
+    finished = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
-    def __init__(self, args: dict):
+    def __init__(self, in_path: str, out_dir: str, base_name: str, params: FillParams, batch_n: int = 1):
         super().__init__()
-        self.args = args
+        self.in_path = in_path
+        self.out_dir = out_dir
+        self.base_name = base_name
+        self.params = params
+        self.batch_n = max(1, int(batch_n))
 
     def run(self):
         try:
-            batch_count = int(self.args.pop("batch_count", 1) or 1)
-            batch_count = max(1, min(50, batch_count))
+            results = {"files": []}
 
-            if batch_count == 1:
-                out, count, report = fill_wb_template(
-                    progress_callback=lambda p: self.progress.emit(int(p)),
-                    **self.args
-                )
-                self.finished.emit(out, count, report)
-                return
+            base_seed = int(time.time() * 1000)
 
-            outputs = []
-            total_filled = 0
-            last_report = {}
+            for i in range(1, self.batch_n + 1):
+                if self.batch_n == 1:
+                    out_name = f"{self.base_name}_ready.xlsx"
+                else:
+                    out_name = f"{self.base_name}_ready_{i}.xlsx"
 
-            for i in range(1, batch_count + 1):
-                # overall progress: file i contributes 1/batch_count
-                def _cb(p, _i=i):
-                    overall = ((_i - 1) + (float(p) / 100.0)) / float(batch_count) * 100.0
-                    self.progress.emit(int(overall))
+                out_path = os.path.join(self.out_dir, out_name)
 
-                out, count, report = fill_wb_template(
-                    progress_callback=_cb,
-                    out_index=i,
-                    **self.args
-                )
-                outputs.append(out)
-                total_filled += int(count)
-                last_report = report or {}
+                # новый seed на каждый файл => разные тексты
+                p = self.params
+                p.seed = base_seed + i * 10007
 
-            last_report = dict(last_report)
-            last_report["batch_outputs"] = outputs
-            last_report["batch_count"] = batch_count
-            self.finished.emit(outputs[-1], total_filled, last_report)
+                rep = fill_wb_template(self.in_path, out_path, p)
+                results["files"].append(rep)
 
+                self.progress.emit(int(i / self.batch_n * 100))
+
+            self.finished.emit(results)
         except Exception as e:
-            self.failed.emit(str(e))
+            self.failed.emit(f"{e}\n\n{traceback.format_exc()}")
 
 
-# -------------------------------
-# UI helpers
-# -------------------------------
-def card() -> QFrame:
-    f = QFrame()
-    f.setObjectName("Card")
-    f.setFrameShape(QFrame.NoFrame)
-    return f
-
-
-class App(QWidget):
+class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(APP_NAME)
-        self.setMinimumWidth(860)
+        self.setWindowTitle("Sunglasses SEO PRO")
+        self.setFixedSize(1104, 738)
 
-        self.data_dir = app_data_dir()
-        self.settings = load_settings()
+        self.data_dir = app_data_dir("Sunglasses SEO PRO")
+        self.in_xlsx: Optional[str] = None
 
-        # list files in data dir
-        self.brands_file = self.data_dir / "brands.txt"
-        self.shapes_file = self.data_dir / "shapes.txt"
-        self.lenses_file = self.data_dir / "lenses.txt"
+        root = QWidget()
+        self.setCentralWidget(root)
+        root.setStyleSheet(GRAPHITE_QSS)
 
-        ensure_list_file(self.brands_file, ["Ray-Ban", "Gucci", "Prada", "Cazal", "Miu Miu"])
-        ensure_list_file(self.shapes_file, ["квадратные", "авиаторы", "овальные", "кошачий глаз", "круглые"])
-        ensure_list_file(self.lenses_file, ["UV400", "поляризационные", "фотохромные", "градиентные"])
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
 
-        self.xlsx_path = ""
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(12)
-
-        # ---------- Header card ----------
-        header = card()
-        hl = QVBoxLayout(header)
-        hl.setContentsMargins(16, 14, 16, 14)
-        title = QLabel("🕶️ Sunglasses SEO PRO")
-        title.setObjectName("Title")
+        header = QFrame(); header.setObjectName("card")
+        hl = QVBoxLayout(header); hl.setContentsMargins(18, 14, 18, 14)
+        title = QLabel("Sunglasses SEO PRO"); title.setObjectName("title")
         subtitle = QLabel("Живые SEO-описания • Выпадающие списки • Прогресс • Темы • WB Safe/Strict • AUTO-пол")
-        subtitle.setObjectName("Subtitle")
-        hl.addWidget(title)
-        hl.addWidget(subtitle)
-        root.addWidget(header)
+        subtitle.setObjectName("subtitle")
+        hl.addWidget(title); hl.addWidget(subtitle)
+        layout.addWidget(header)
 
-        # ---------- Top bar card ----------
-        top = card()
-        tl = QGridLayout(top)
-        tl.setContentsMargins(16, 14, 16, 14)
-        tl.setHorizontalSpacing(12)
-        tl.setVerticalSpacing(10)
+        ctrl = QFrame(); ctrl.setObjectName("card")
+        cl = QGridLayout(ctrl); cl.setContentsMargins(18, 14, 18, 14)
+        cl.setHorizontalSpacing(12); cl.setVerticalSpacing(10)
 
-        lbl_theme = QLabel("🎨 Тема")
-        lbl_theme.setObjectName("Section")
-        self.cmb_theme = QComboBox()
-        self.cmb_theme.addItems(list(THEMES.keys()))
-        saved_theme = self.settings.get("theme", "Midnight")
-        if saved_theme in THEMES:
-            self.cmb_theme.setCurrentText(saved_theme)
-        self.cmb_theme.currentTextChanged.connect(self.apply_theme)
+        cl.addWidget(QLabel("🎨 Тема"), 0, 0)
+        self.theme_cb = QComboBox(); self.theme_cb.addItems(["Graphite"])
+        cl.addWidget(self.theme_cb, 0, 1)
 
-        lbl_dir = QLabel("📁 Справочники:")
-        lbl_dir.setObjectName("Section")
-        self.lbl_data = QLabel(str(self.data_dir))
-        self.lbl_data.setObjectName("Pill")
-        btn_folder = QPushButton("Папка")
-        btn_folder.setObjectName("Ghost")
-        btn_folder.clicked.connect(self.open_data_folder)
+        cl.addWidget(QLabel("📁 Справочники:"), 0, 2)
+        self.data_dir_le = QLineEdit(self.data_dir); self.data_dir_le.setReadOnly(True)
+        cl.addWidget(self.data_dir_le, 0, 3)
 
-        btn_xlsx = QPushButton("⬆️ Загрузить XLSX")
-        btn_xlsx.setObjectName("Ghost")
-        btn_xlsx.clicked.connect(self.pick_xlsx)
-        self.lbl_xlsx = QLabel("Файл не выбран")
-        self.lbl_xlsx.setObjectName("Muted")
+        btn_folder = QPushButton("Папка"); btn_folder.setObjectName("btnSmall")
+        btn_folder.clicked.connect(self.pick_data_dir)
+        cl.addWidget(btn_folder, 0, 4)
+        layout.addWidget(ctrl)
 
-        tl.addWidget(lbl_theme, 0, 0)
-        tl.addWidget(self.cmb_theme, 0, 1)
-        tl.addWidget(lbl_dir, 0, 2)
-        tl.addWidget(self.lbl_data, 0, 3)
-        tl.addWidget(btn_folder, 0, 4)
+        xcard = QFrame(); xcard.setObjectName("card")
+        xl = QHBoxLayout(xcard); xl.setContentsMargins(18, 14, 18, 14)
+        btn_load = QPushButton("📄 Загрузить XLSX")
+        btn_load.clicked.connect(self.pick_xlsx)
+        self.x_label = QLabel("Файл не выбран")
+        xl.addWidget(btn_load); xl.addWidget(self.x_label, 1)
+        layout.addWidget(xcard)
 
-        tl.addWidget(btn_xlsx, 1, 0, 1, 2)
-        tl.addWidget(self.lbl_xlsx, 1, 2, 1, 3)
+        form = QFrame(); form.setObjectName("card")
+        fl = QGridLayout(form); fl.setContentsMargins(18, 14, 18, 14)
+        fl.setHorizontalSpacing(12); fl.setVerticalSpacing(10)
 
-        root.addWidget(top)
+        self.brand_cb = QComboBox(); self.brand_cb.addItems(["Balenciaga", "Gucci", "Prada", "Ray-Ban", "Dior", "Versace"])
+        self.shape_cb = QComboBox(); self.shape_cb.addItems(["Вайфаеры", "Авиаторы", "Кошачий глаз", "Квадратные", "Круглые", "Овальные"])
+        self.lens_cb = QComboBox(); self.lens_cb.addItems(["Поляризационные", "Градиентные", "Зеркальные", "Фотохромные", "УФ400"])
+        self.collection_le = QLineEdit("Весна–Лето 2026")
 
-        # ---------- Main controls card ----------
-        main = card()
-        ml = QGridLayout(main)
-        ml.setContentsMargins(16, 14, 16, 14)
-        ml.setHorizontalSpacing(12)
-        ml.setVerticalSpacing(10)
+        fl.addWidget(QLabel("Бренд"), 0, 0); fl.addWidget(self.brand_cb, 0, 1)
+        fl.addWidget(QLabel("Форма оправы"), 1, 0); fl.addWidget(self.shape_cb, 1, 1)
+        fl.addWidget(QLabel("Линзы"), 2, 0); fl.addWidget(self.lens_cb, 2, 1)
+        fl.addWidget(QLabel("Коллекция"), 3, 0); fl.addWidget(self.collection_le, 3, 1)
 
-        # dropdowns
-        self.cmb_brand = QComboBox()
-        self.cmb_shape = QComboBox()
-        self.cmb_lens = QComboBox()
+        for r in range(0, 3):
+            plus = QPushButton("+")
+            plus.setFixedWidth(42)
+            plus.clicked.connect(lambda: None)
+            fl.addWidget(plus, r, 2)
 
-        self.reload_lists()
+        fl.addWidget(QLabel("SEO-плотность"), 4, 0)
+        self.seo_cb = QComboBox(); self.seo_cb.addItems(["low", "normal", "high"])
+        fl.addWidget(self.seo_cb, 4, 1)
 
-        self.ed_collection = QLineEdit()
-        self.ed_collection.setText(self.settings.get("collection", "Весна–Лето 2026"))
+        fl.addWidget(QLabel("Длина"), 4, 2)
+        self.len_cb = QComboBox(); self.len_cb.addItems(["short", "medium", "long"])
+        fl.addWidget(self.len_cb, 4, 3)
 
-        btn_add_brand = QPushButton("+")
-        btn_add_brand.setObjectName("Plus")
-        btn_add_brand.clicked.connect(lambda: self.add_item_dialog("Бренд", self.brands_file, self.cmb_brand))
+        fl.addWidget(QLabel("Стиль"), 4, 4)
+        self.style_cb = QComboBox(); self.style_cb.addItems(["premium", "basic", "sport"])
+        fl.addWidget(self.style_cb, 4, 5)
 
-        btn_add_shape = QPushButton("+")
-        btn_add_shape.setObjectName("Plus")
-        btn_add_shape.clicked.connect(lambda: self.add_item_dialog("Форма оправы", self.shapes_file, self.cmb_shape))
+        fl.addWidget(QLabel("AUTO-пол"), 5, 0)
+        self.gender_cb = QComboBox(); self.gender_cb.addItems(["Auto", "Male", "Female"])
+        fl.addWidget(self.gender_cb, 5, 1)
 
-        btn_add_lens = QPushButton("+")
-        btn_add_lens.setObjectName("Plus")
-        btn_add_lens.clicked.connect(lambda: self.add_item_dialog("Линзы", self.lenses_file, self.cmb_lens))
+        self.safe_ck = QCheckBox("WB Safe Mode (заменяет риск-слова)"); self.safe_ck.setChecked(True)
+        self.strict_ck = QCheckBox("WB Strict (убирает обещания/абсолюты)"); self.strict_ck.setChecked(True)
+        fl.addWidget(self.safe_ck, 5, 2, 1, 2)
+        fl.addWidget(self.strict_ck, 5, 4, 1, 2)
 
-        ml.addWidget(QLabel("Бренд"), 0, 0)
-        ml.addWidget(self.cmb_brand, 0, 1)
-        ml.addWidget(btn_add_brand, 0, 2)
+        layout.addWidget(form)
 
-        ml.addWidget(QLabel("Форма оправы"), 1, 0)
-        ml.addWidget(self.cmb_shape, 1, 1)
-        ml.addWidget(btn_add_shape, 1, 2)
+        bottom = QFrame(); bottom.setObjectName("card")
+        bl = QHBoxLayout(bottom); bl.setContentsMargins(18, 14, 18, 14); bl.setSpacing(12)
 
-        ml.addWidget(QLabel("Линзы"), 2, 0)
-        ml.addWidget(self.cmb_lens, 2, 1)
-        ml.addWidget(btn_add_lens, 2, 2)
+        self.progress = QProgressBar(); self.progress.setValue(0)
 
-        ml.addWidget(QLabel("Коллекция"), 3, 0)
-        ml.addWidget(self.ed_collection, 3, 1, 1, 2)
-
-        # seo controls
-        self.cmb_seo = QComboBox()
-        self.cmb_seo.addItems(["low", "normal", "high"])
-        self.cmb_seo.setCurrentText(self.settings.get("seo_level", "normal"))
-
-        self.cmb_gender = QComboBox()
-        self.cmb_gender.addItems(["Auto", "Женские", "Мужские", "Унисекс"])
-        self.cmb_gender.setCurrentText(self.settings.get("gender_mode", "Auto"))
-
-        self.chk_safe = QCheckBox("WB Safe Mode (заменяет риск-слова)")
-        self.chk_safe.setChecked(bool(self.settings.get("wb_safe_mode", True)))
-
-        self.chk_strict = QCheckBox("WB Strict (убирает обещания/абсолюты)")
-        self.chk_strict.setChecked(bool(self.settings.get("wb_strict", True)))
-
-        ml.addWidget(QLabel("SEO-плотность"), 4, 0)
-        ml.addWidget(self.cmb_seo, 4, 1, 1, 2)
-
-        ml.addWidget(QLabel("AUTO-пол"), 5, 0)
-        ml.addWidget(self.cmb_gender, 5, 1, 1, 2)
-
-        ml.addWidget(self.chk_safe, 6, 0, 1, 3)
-        ml.addWidget(self.chk_strict, 7, 0, 1, 3)
-
-        root.addWidget(main)
-
-        # ---------- Bottom bar card ----------
-        bottom = card()
-        bl = QHBoxLayout(bottom)
-        bl.setContentsMargins(16, 14, 16, 14)
-        bl.setSpacing(12)
-
-        self.progress = QProgressBar()
-        self.progress.setValue(0)
-
-        self.btn_run = QPushButton("🚀 СГЕНЕРИРОВАТЬ")
-        self.btn_run.setObjectName("Primary")
-        self.btn_run.clicked.connect(self.start)
+        self.btn_single = QPushButton("🚀 СГЕНЕРИРОВАТЬ")
+        self.btn_single.clicked.connect(self.run_single)
 
         self.btn_batch = QPushButton("📦 СОЗДАТЬ ПАКЕТ XLSX")
-        self.btn_batch.setObjectName("Ghost")
-        self.btn_batch.clicked.connect(self.start_batch)
+        self.btn_batch.clicked.connect(self.run_batch)
 
-        bl.addWidget(self.progress, 2)
-        bl.addWidget(self.btn_batch, 1)
-        bl.addWidget(self.btn_run, 1)
+        bl.addWidget(self.progress, 1)
+        bl.addWidget(self.btn_batch)
+        bl.addWidget(self.btn_single)
+        layout.addWidget(bottom)
 
-        root.addWidget(bottom)
+        self.worker: Optional[Worker] = None
 
-        # apply theme
-        self.apply_theme(self.cmb_theme.currentText())
-
-    # ------------------
-    def apply_theme(self, name: str):
-        qss = THEMES.get(name, "")
-        QApplication.instance().setStyleSheet(qss)
-        self.settings["theme"] = name
-        save_settings(self.settings)
-
-    def open_data_folder(self):
-        # Windows explorer open
-        try:
-            os.startfile(str(self.data_dir))
-        except Exception:
-            QMessageBox.information(self, "Папка", str(self.data_dir))
+    def pick_data_dir(self):
+        path = QFileDialog.getExistingDirectory(self, "Выберите папку со справочниками", self.data_dir)
+        if path:
+            self.data_dir = path
+            self.data_dir_le.setText(path)
 
     def pick_xlsx(self):
         path, _ = QFileDialog.getOpenFileName(self, "Выберите XLSX", "", "Excel (*.xlsx)")
         if path:
-            self.xlsx_path = path
-            self.lbl_xlsx.setText(Path(path).name)
+            self.in_xlsx = path
+            self.x_label.setText(os.path.basename(path))
 
-    def reload_lists(self):
-        brands = load_list(self.brands_file, ["Ray-Ban"])
-        shapes = load_list(self.shapes_file, ["квадратные"])
-        lenses = load_list(self.lenses_file, ["UV400"])
+    def _build_params(self) -> FillParams:
+        gender = self.gender_cb.currentText().lower()
+        if gender == "auto":
+            gm = "auto"
+        elif gender == "male":
+            gm = "male"
+        else:
+            gm = "female"
 
-        self.cmb_brand.clear()
-        self.cmb_shape.clear()
-        self.cmb_lens.clear()
-
-        self.cmb_brand.addItems(brands)
-        self.cmb_shape.addItems(shapes)
-        self.cmb_lens.addItems(lenses)
-
-        # restore last
-        last_brand = self.settings.get("brand", "")
-        last_shape = self.settings.get("shape", "")
-        last_lens = self.settings.get("lens", "")
-        if last_brand in brands:
-            self.cmb_brand.setCurrentText(last_brand)
-        if last_shape in shapes:
-            self.cmb_shape.setCurrentText(last_shape)
-        if last_lens in lenses:
-            self.cmb_lens.setCurrentText(last_lens)
-
-    def add_item_dialog(self, title: str, file_path: Path, combo: QComboBox):
-        from PyQt5.QtWidgets import QInputDialog
-        val, ok = QInputDialog.getText(self, f"Добавить: {title}", f"Введите {title.lower()}:")
-        if not ok:
-            return
-        val = (val or "").strip()
-        if not val:
-            return
-        add_to_list(file_path, val)
-        self.reload_lists()
-        combo.setCurrentText(val)
-
-    # ------------------
-    def start(self):
-        if not self.xlsx_path:
-            QMessageBox.warning(self, "Файл", "Сначала выбери XLSX файл.")
-            return
-
-        brand = self.cmb_brand.currentText().strip()
-        shape = self.cmb_shape.currentText().strip()
-        lens = self.cmb_lens.currentText().strip()
-        collection = self.ed_collection.text().strip()
-        seo_level = self.cmb_seo.currentText()
-        gender_mode = self.cmb_gender.currentText()
-        wb_safe = self.chk_safe.isChecked()
-        wb_strict = self.chk_strict.isChecked()
-
-        # persist choices
-        self.settings.update({
-            "brand": brand,
-            "shape": shape,
-            "lens": lens,
-            "collection": collection,
-            "seo_level": seo_level,
-            "gender_mode": gender_mode,
-            "wb_safe_mode": wb_safe,
-            "wb_strict": wb_strict,
-        })
-        save_settings(self.settings)
-
-        self.progress.setValue(0)
-        self.btn_run.setEnabled(False)
-        self.btn_batch.setEnabled(False)
-
-        args = dict(
-            input_xlsx=self.xlsx_path,
-            brand_lat=brand,
-            shape=shape,
-            lens=lens,
-            collection=collection,
-            style="neutral",
-            desc_length="medium",
-            seo_level=seo_level,
-            gender_mode=gender_mode,
-            wb_safe_mode=wb_safe,
-            wb_strict=wb_strict,
-            uniq_strength=85 if seo_level == "high" else (75 if seo_level == "normal" else 65),
-            data_dir=str(self.data_dir),
-            rows_to_fill=6,
+        return FillParams(
+            brand=self.brand_cb.currentText(),
+            shape=self.shape_cb.currentText(),
+            lens=self.lens_cb.currentText(),
+            collection=self.collection_le.text().strip() or "Коллекция",
+            seo_density=self.seo_cb.currentText(),
+            length_mode=self.len_cb.currentText(),
+            style_mode=self.style_cb.currentText(),
+            gender_mode=gm,
+            safe_mode=self.safe_ck.isChecked(),
+            strict_mode=self.strict_ck.isChecked(),
+            data_dir=self.data_dir,
+            seed=None,
+            uniq_strength=3,
         )
 
-        self.worker = Worker(args)
-        self.worker.progress.connect(self.progress.setValue)
-        self.worker.finished.connect(self.done)
-        self.worker.failed.connect(self.fail)
-        self.worker.start()
+    def _ensure_ready(self) -> bool:
+        if not self.in_xlsx or not os.path.exists(self.in_xlsx):
+            QMessageBox.warning(self, "Нет файла", "Сначала нажми «Загрузить XLSX» и выбери файл.")
+            return False
+        return True
 
-    
-    def start_batch(self):
-        if not self.xlsx_path:
-            QMessageBox.warning(self, "Файл", "Сначала выбери XLSX файл.")
+    def _run(self, batch_n: int):
+        if not self._ensure_ready():
             return
 
-        n, ok = QInputDialog.getInt(self, "Пакет XLSX", "Сколько файлов создать?", 3, 2, 50, 1)
-        if not ok:
-            return
+        in_path = self.in_xlsx
+        out_dir = os.path.dirname(in_path)
+        base = os.path.splitext(os.path.basename(in_path))[0]
 
-        brand = self.cmb_brand.currentText().strip()
-        shape = self.cmb_shape.currentText().strip()
-        lens = self.cmb_lens.currentText().strip()
-        collection = self.ed_collection.text().strip()
-        seo_level = self.cmb_seo.currentText()
-        gender_mode = self.cmb_gender.currentText()
-        wb_safe = self.chk_safe.isChecked()
-        wb_strict = self.chk_strict.isChecked()
-
-        # persist choices
-        self.settings.update({
-            "brand": brand,
-            "shape": shape,
-            "lens": lens,
-            "collection": collection,
-            "seo_level": seo_level,
-            "gender_mode": gender_mode,
-            "wb_safe_mode": wb_safe,
-            "wb_strict": wb_strict,
-        })
-        save_settings(self.settings)
+        params = self._build_params()
 
         self.progress.setValue(0)
-        self.btn_run.setEnabled(False)
+        self.btn_single.setEnabled(False)
         self.btn_batch.setEnabled(False)
 
-        args = dict(
-            input_xlsx=self.xlsx_path,
-            brand_lat=brand,
-            shape=shape,
-            lens=lens,
-            collection=collection,
-            style="neutral",
-            desc_length="medium",
-            seo_level=seo_level,
-            gender_mode=gender_mode,
-            wb_safe_mode=wb_safe,
-            wb_strict=wb_strict,
-            uniq_strength=85 if seo_level == "high" else (75 if seo_level == "normal" else 65),
-            data_dir=str(self.data_dir),
-            rows_to_fill=6,
-            batch_count=int(n),
-        )
-
-        self.worker = Worker(args)
+        self.worker = Worker(in_path, out_dir, base, params, batch_n=batch_n)
         self.worker.progress.connect(self.progress.setValue)
-        self.worker.finished.connect(self.done)
-        self.worker.failed.connect(self.fail)
+        self.worker.finished.connect(self.on_done)
+        self.worker.failed.connect(self.on_fail)
         self.worker.start()
-def done(self, out_path: str, count: int, report: dict):
-        self.btn_run.setEnabled(True)
+
+    def run_single(self):
+        self._run(batch_n=1)
+
+    def run_batch(self):
+        if not self._ensure_ready():
+            return
+        n, ok = QInputDialog.getInt(self, "Пакет XLSX", "Сколько XLSX создать разом?", 5, 2, 50, 1)
+        if ok:
+            self._run(batch_n=n)
+
+    def on_done(self, result: dict):
+        self.btn_single.setEnabled(True)
         self.btn_batch.setEnabled(True)
         self.progress.setValue(100)
 
-        report = report or {}
-        if isinstance(report, dict) and report.get("batch_outputs"):
-            outputs = report.get("batch_outputs", [])
-            msg = f"Создано файлов: {len(outputs)}\nЗаполнено строк всего: {count}\n\nПоследний файл: {out_path}"
-        else:
-            msg = f"Заполнено строк: {count}\nФайл: {out_path}"
+        files = result.get("files") or []
+        last = files[-1]["out_path"] if files else ""
+        QMessageBox.information(self, "Готово", f"Создано файлов: {len(files)}\nПоследний файл:\n{last}")
 
-        QMessageBox.information(
-            self,
-            "Готово",
-            msg + "\n\nОтчёт: " + json.dumps(report, ensure_ascii=False)
-        )
-
-def fail(self, msg: str):
-        self.btn_run.setEnabled(True)
+    def on_fail(self, err: str):
+        self.btn_single.setEnabled(True)
         self.btn_batch.setEnabled(True)
-        QMessageBox.critical(self, "Ошибка", msg)
+        QMessageBox.critical(self, "Ошибка", err)
 
 
 def main():
+    # DPI до QApplication
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+
     app = QApplication(sys.argv)
-    w = App()
+    app.setFont(QFont("Segoe UI", 10))
+    w = MainWindow()
     w.show()
     sys.exit(app.exec_())
 
